@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Lobby from "./pages/Lobby";
 import Arena from "./pages/arena/Arena";
+import Questions from "./pages/Questions";
 import Complete from "./pages/Complete";
 import Leaderboard from "./pages/Leaderboard";
 import Admin from "./pages/Admin";
@@ -56,6 +57,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <Arena />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/questions"
+          element={
+            <ProtectedRoute>
+              <Questions />
             </ProtectedRoute>
           }
         />

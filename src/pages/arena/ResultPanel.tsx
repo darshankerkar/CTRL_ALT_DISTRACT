@@ -300,7 +300,7 @@ export function ResultPanel({
               )}
               {submitResult === "expired" && (
                 <div className="border border-danger/40 bg-fill-danger px-3 py-2 text-danger" role="alert">
-                  ⏱ TIME'S UP
+                  ✕ ROUND CLOSED
                 </div>
               )}
             </div>

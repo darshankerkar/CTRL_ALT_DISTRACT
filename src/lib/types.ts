@@ -22,8 +22,8 @@ export interface EventInfo {
   eventDate: string;
   eventTime: string;
   totalRounds: number;
-  roundSeconds: number;
-  roundMinutes: number;
+  roundSeconds: number | null;
+  roundMinutes: number | null;
   dsaPoints: number;
   bonusPoints: number;
   distractionSeconds: number;
@@ -106,7 +106,7 @@ export type DistractionState = "pending" | "active" | "cleared" | "missed";
 export interface RoundInfo {
   round: number;
   status: "active" | "solved" | "expired";
-  secondsLeft: number;
+  elapsedSeconds: number;
   distraction: {
     state: DistractionState;
     atSeconds: number;
@@ -122,6 +122,23 @@ export interface ArenaState {
   rounds: Array<{ round: number; status: "solved" | "expired" }>;
   round: RoundInfo | null;
   serverTime: number;
+}
+
+export interface ArenaQuestion {
+  round: number;
+  title: string;
+  difficulty: Difficulty;
+  points: number;
+  status: "solved" | "unsolved";
+  description: string;
+  inProgress: boolean;
+}
+
+export interface ArenaQuestionsResponse {
+  items: ArenaQuestion[];
+  participant: ParticipantSummary;
+  eventStatus: EventStatus;
+  finished: boolean;
 }
 
 export interface CompileInfo {
@@ -140,6 +157,7 @@ export interface CaseResult {
 }
 
 export interface RunResponse {
+  round: number;
   result: "passed" | "failed" | "compile-error";
   passed: number;
   total: number;
@@ -150,6 +168,7 @@ export interface RunResponse {
 }
 
 export interface SubmitResponse {
+  round: number;
   result: "accepted" | "wrong" | "compile-error" | "expired";
   headline: string;
   passed: number;
@@ -161,6 +180,7 @@ export interface SubmitResponse {
 }
 
 export interface DistractionResolveBody {
+  round?: number;
   result: "passed" | "failed" | "timeout";
   timeTaken: number;
   distractionId?: string;

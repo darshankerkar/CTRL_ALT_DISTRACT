@@ -4,7 +4,6 @@ import type { EventInfo } from "../lib/types";
 import { cn, formatMMSS } from "../lib/utils";
 
 function buildSections(EVENT: EventInfo) {
-  const roundClock = formatMMSS(EVENT.roundMinutes * 60);
   const interruptClock = formatMMSS(EVENT.distractionSeconds);
   const langs = EVENT.languages.map((l) => l.label);
   const langList = langs.length > 1 ? `${langs.slice(0, -1).join(", ")}, or ${langs[langs.length - 1]}` : langs.join("");
@@ -12,13 +11,12 @@ function buildSections(EVENT: EventInfo) {
   {
     id: "structure",
     title: "Structure",
-    body: `The competition has ${EVENT.totalRounds} rounds. Each round is one DSA problem. Rounds are played in order; you can't go back to a previous round.`,
+    body: `The competition has ${EVENT.totalRounds} questions. Use All Questions in the arena to choose any unsolved question, in any order. Your code drafts and earned points are saved when you switch questions. Solved questions cannot be submitted again.`,
   },
   {
     id: "time-limits",
-    title: "Time limits",
-    body: `Each round has a ${roundClock} timer. When it reaches 00:00, the round ends and the next round loads.`,
-    chip: roundClock,
+    title: "No time limit per question",
+    body: "There is no time limit per question. A correct submission returns you to All Questions to choose your next question. Switching questions or browsing the list does not pause your recorded participation time. You can continue until the organizers end the competition.",
   },
   {
     id: "languages",

@@ -24,6 +24,11 @@ _leaderboard_cache: tuple[float, list[dict]] | None = None
 _lobby_cache: tuple[float, LobbyResponse] | None = None
 
 
+def invalidate_leaderboard() -> None:
+    global _leaderboard_cache
+    _leaderboard_cache = None
+
+
 async def me(user_id: str, email: str | None) -> MeResponse:
     async with db.acquire() as conn:
         profile = await conn.fetchrow(

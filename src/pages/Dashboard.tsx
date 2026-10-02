@@ -1,7 +1,7 @@
 import { ArcadeSides } from "../components/ArcadeSides";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Lock, X } from "lucide-react";
+import { Check, CircleAlert, Lock, X } from "lucide-react";
 import { AppHeader, type EventBadgeState } from "../components/headers/AppHeader";
 import { Button, PixelSpinner } from "../components/ui/Button";
 import { api, ApiError } from "../lib/api";
@@ -46,7 +46,7 @@ const STATE_META: Record<
   finished: {
     badge: "finished",
     cta: "View leaderboard",
-    helper: "You finished every round.",
+    helper: "Your participation has finished. Your earned points are saved.",
   },
 };
 
@@ -60,6 +60,9 @@ export default function Dashboard() {
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState("");
   const [checks, setChecks] = useState([false, false, false]);
+  const [checklistAttempted, setChecklistAttempted] = useState(false);
+  const checklistInputs = useRef<Array<HTMLInputElement | null>>([]);
+  const checklistErrorRef = useRef<HTMLDivElement>(null);
 
   // Always show fresh progress when landing here or when the event changes phase.
   useEffect(() => {
@@ -67,6 +70,7 @@ export default function Dashboard() {
   }, [EVENT.status, refreshMe]);
 
   const part = me?.participation ?? null;
+  const checklistConfirmed = part !== null;
   const state: DashState =
     part?.status === "finished"
       ? "finished"
@@ -88,11 +92,23 @@ export default function Dashboard() {
   const meta = STATE_META[state];
   const checklistDone = checks.every(Boolean);
   const gated = state === "not-joined" && !checklistDone;
-  const ctaDisabled = !!meta.disabled || gated;
-  const gatedClass = gated ? "disabled:bg-white! disabled:text-neutral-500!" : undefined;
+  const checklistError = checklistAttempted && gated;
+  const ctaDisabled = !!meta.disabled;
+  const gatedClass = gated ? "bg-white! text-neutral-500! shadow-none! hover:bg-white! hover:shadow-none!" : undefined;
+
+  useEffect(() => {
+    if (checklistError) checklistErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [checklistError]);
 
   const handlePrimary = () => {
-    if (gated) return;
+    if (gated) {
+      setChecklistAttempted(true);
+      const firstMissing = checklistInputs.current[checks.findIndex((checked) => !checked)];
+      checklistErrorRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      firstMissing?.focus({ preventScroll: true });
+      return;
+    }
+    setChecklistAttempted(false);
     if (state === "not-joined") return setConfirmOpen(true);
     if (state === "joined") return navigate("/lobby");
     if (state === "live") return navigate("/arena");
@@ -155,7 +171,7 @@ export default function Dashboard() {
               <div className="mt-6 grid grid-cols-2 divide-x divide-border-default border border-border-default sm:grid-cols-4">
                 {[
                   ["Rounds", String(EVENT.totalRounds)],
-                  ["Per round", formatMMSS(EVENT.roundSeconds)],
+                  ["Per round", "No time limit"],
                   ["Interrupt", formatMMSS(EVENT.distractionSeconds)],
                   ["Languages", EVENT.languages.map((l) => l.label.toUpperCase()).join(" · ")],
                 ].map(([label, val]) => (
@@ -176,6 +192,8 @@ export default function Dashboard() {
                   size="lg"
                   chamfer
                   disabled={ctaDisabled}
+                  aria-disabled={gated || ctaDisabled}
+                  aria-describedby={checklistError ? "join-checklist-error" : undefined}
                   className={gatedClass}
                   icon={meta.lock ? <Lock size={18} /> : undefined}
                   onClick={handlePrimary}
@@ -183,15 +201,31 @@ export default function Dashboard() {
                   {meta.cta}
                 </Button>
               </div>
-              <p className="mt-3 font-body text-sm text-text-muted">
-                {gated ? "Tick all three checklist items to enable joining." : helper}
-              </p>
+              {checklistError ? (
+                <div
+                  id="join-checklist-error"
+                  ref={checklistErrorRef}
+                  role="alert"
+                  className="mt-4 flex scroll-mb-24 items-start gap-2.5 rounded-sm border border-danger/40 bg-fill-danger px-3 py-3 font-body text-sm text-danger"
+                >
+                  <CircleAlert size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <p>
+                    <span className="font-semibold">Complete the checklist before joining.</span>{" "}
+                    <span className="hidden lg:inline">Tick all three checkboxes in the “Before you join” panel on the right.</span>
+                    <span className="lg:hidden">Tick all three checkboxes in the “Before you join” panel below.</span>
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-3 font-body text-sm text-text-muted">
+                  {gated ? "Confirm all three checklist items before joining." : helper}
+                </p>
+              )}
             </div>
           </div>
 
           {/* Status panel */}
           <div className="lg:col-span-4">
-            <div className="border border-border-default bg-bg-panel p-6">
+            <div className={cn("border bg-bg-panel p-6", checklistError ? "border-danger/60" : "border-border-default")}>
               <div className="flex flex-col divide-y divide-border-hairline">
                 {[
                   ["Entry", part ? "Joined" : "Not joined"],
@@ -208,17 +242,31 @@ export default function Dashboard() {
               </div>
 
               <div className="mt-5 flex flex-col gap-2.5">
+                <h3 className="font-label text-[16px] uppercase tracking-[0.04em] text-text-muted">{checklistConfirmed ? "Checklist confirmed" : "Before you join"}</h3>
                 {["I've read the rulebook", "I'm on a desktop or laptop", "My internet connection is stable"].map(
                   (label, i) => (
-                    <label key={label} className="flex cursor-pointer items-center gap-2.5">
+                    <label key={label} className={cn("flex items-center gap-2.5", checklistConfirmed ? "cursor-default" : "cursor-pointer")}>
                       <input
+                        ref={(input) => { checklistInputs.current[i] = input; }}
                         type="checkbox"
-                        checked={checks[i]}
+                        checked={checklistConfirmed || checks[i]}
+                        disabled={checklistConfirmed}
+                        aria-invalid={checklistError && !checks[i] ? true : undefined}
+                        aria-describedby={checklistError && !checks[i] ? "join-checklist-error" : undefined}
                         onChange={() =>
                           setChecks((c) => c.map((v, idx) => (idx === i ? !v : v)))
                         }
-                        className="h-[18px] w-[18px] appearance-none border border-border-strong bg-bg-inset checked:border-accent-cyan checked:bg-accent-cyan"
+                        className="peer sr-only"
                       />
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "flex h-[18px] w-[18px] shrink-0 items-center justify-center border border-border-strong bg-bg-inset transition-colors peer-checked:border-success peer-checked:bg-success peer-focus-visible:ring-2 peer-focus-visible:ring-accent-cyan peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-bg-panel",
+                          checklistError && !checks[i] && "border-danger",
+                        )}
+                      >
+                        <Check size={14} strokeWidth={3} className={cn("text-bg-canvas", checklistConfirmed || checks[i] ? "opacity-100" : "opacity-0")} />
+                      </span>
                       <span className="font-body text-sm text-text-secondary">{label}</span>
                     </label>
                   ),
@@ -238,6 +286,8 @@ export default function Dashboard() {
           chamfer
           fullWidth
           disabled={ctaDisabled}
+          aria-disabled={gated || ctaDisabled}
+          aria-describedby={checklistError ? "join-checklist-error" : undefined}
           className={gatedClass}
           onClick={handlePrimary}
         >

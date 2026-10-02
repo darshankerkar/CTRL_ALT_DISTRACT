@@ -9,8 +9,11 @@ from ..schemas import (
     CodeRequest,
     DistractionResolveRequest,
     DistractionResolveResponse,
+    DistractionStartRequest,
     ProblemPublic,
+    QuestionsResponse,
     RunResponse,
+    SelectQuestionRequest,
     SubmitResponse,
 )
 from ..security import AuthUser, client_id, current_user
@@ -28,13 +31,24 @@ async def state(user: User, client: Client) -> ArenaState:
 
 @router.post("/start", response_model=ArenaState)
 async def start(user: User, client: Client) -> ArenaState:
-    """Begin round 1, or advance after a round has been solved / has expired. Idempotent."""
+    """Resume the selected question, or begin the first remaining unsolved question."""
     return await arena.start_or_advance(user.id, client)
 
 
-@router.post("/expire", response_model=ArenaState)
-async def expire(user: User) -> ArenaState:
-    return await arena.expire(user.id)
+@router.get("/questions", response_model=QuestionsResponse)
+async def questions(user: User) -> QuestionsResponse:
+    return await arena.questions(user.id)
+
+
+@router.post("/select", response_model=ArenaState)
+async def select_question(body: SelectQuestionRequest, user: User, client: Client) -> ArenaState:
+    return await arena.select_question(user.id, body.round, client)
+
+
+@router.post("/exit", response_model=ArenaState)
+async def exit_challenge(user: User) -> ArenaState:
+    """End your participation and preserve your earned score on the leaderboard."""
+    return await arena.exit_challenge(user.id)
 
 
 @router.get("/problem", response_model=ProblemPublic)
@@ -53,8 +67,8 @@ async def submit(body: CodeRequest, user: User) -> SubmitResponse:
 
 
 @router.post("/distraction/start", response_model=ArenaState)
-async def distraction_start(user: User) -> ArenaState:
-    return await arena.distraction_start(user.id)
+async def distraction_start(user: User, body: DistractionStartRequest | None = None) -> ArenaState:
+    return await arena.distraction_start(user.id, body.round if body is not None else None)
 
 
 @router.post("/distraction/resolve", response_model=DistractionResolveResponse)

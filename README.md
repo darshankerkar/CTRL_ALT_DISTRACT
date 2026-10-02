@@ -4,9 +4,9 @@
 
 <kbd>CTRL</kbd> <kbd>ALT</kbd> <kbd>DISTRACT</kbd>
 
-**Solve the problem. Beat the clock. Survive the distraction.**
+**Solve the problem. Survive the distraction.**
 
-A live DSA competition with timed rounds, code judging, and surprise mini-games.
+A live DSA competition with code judging and surprise mini-games.
 
 [Setup](#local-setup) · [Accounts](#participant-and-admin-access) · [Run an event](#running-an-event) · [Routes](#routes) · [Checks](#development-checks)
 
@@ -17,8 +17,9 @@ A live DSA competition with timed rounds, code judging, and surprise mini-games.
 ## What it does
 
 - **Coding arena:** solve problems in Python, C++, C, or Java with sample runs and judged submissions.
-- **Timed rounds:** the server tracks time, progress, and scores across refreshes.
-- **Distraction mini-games:** random interruptions pause the round clock while players complete a challenge.
+- **Coding rounds:** questions have no individual time limit; the server tracks elapsed coding time, progress, and scores across refreshes.
+- **Question selection:** **All questions** lists the participant's assigned questions with Status and Difficulty filters. **Previous** and **Next** in the arena move between unsolved questions and preserve saved drafts.
+- **Distraction mini-games:** random interruptions pause elapsed coding time while players complete a timed challenge.
 - **Live competition:** a shared lobby, event countdown, leaderboard, and results page.
 - **Admin console:** approve or reject participant registrations, control the event, review proctoring alerts, and reset an ended event.
 - **Arcade interface:** dark panels, pixel typography, and the CTRL / ALT / DISTRACT keycap logo.
@@ -138,7 +139,7 @@ To use a participant and admin at the same time, open separate browser profiles,
 1. **Register and approve:** participants create accounts; an admin reviews them under **Account approvals**.
 2. **Join:** approved participants sign in, read the rulebook through **Rules**, tick the dashboard checklist, and join the lobby.
 3. **Start:** an admin opens `/admin` and selects **Start event**. Players see the countdown before entering the arena.
-4. **Play:** participants complete their assigned rounds, submit solutions, and handle distraction mini-games.
+4. **Play:** **All questions** lets participants choose their assigned questions in any order. Switching preserves each question's draft, active solving time, and interruption schedule. Correct submissions return to the list to choose another question. **Exit challenge** ends their participation after confirmation; earned points, submission history, and leaderboard results are retained.
 5. **Finish:** **End event** closes active rounds and sends players to their results.
 6. **Reset:** after the event ends, **Reset event** clears participation, attempts, submissions, and alerts, then reopens the lobby. Registration approvals are preserved.
 
@@ -152,8 +153,9 @@ Browser ── JWT ──► FastAPI ── asyncpg ──► Supabase Postgres
    └── Event status updates ──────► Supabase Realtime
 ```
 
-- **Server-owned state:** clocks, scoring, and round assignments are computed on the backend. Distractions pause the clock server-side.
+- **Server-owned state:** elapsed coding time, scoring, and round assignments are computed on the backend. Distractions pause elapsed coding time server-side. Questions stay open until solved, the participant exits, or the organiser ends the event; elapsed time remains available for leaderboard tie-breaks.
 - **Consistent scoring:** scoring operations lock the player's database row to prevent duplicate scoring from concurrent requests.
+- **Persistent selection:** apply migration `009_question_selection.sql` before using question selection. Inactive questions pause their accumulated solving time; an active or due interruption must be completed before switching. Participation finishes after all questions are solved, the participant exits, or the event ends.
 - **Two judging modes:** `io` runs complete programs and compares stdout; `function` wraps a player's solution in a generated driver. **Run** uses samples; **Submit** also uses hidden tests.
 - **Protected competition data:** the browser uses the API for gameplay data and mutations. Profiles have role-based access policies, and `event_config` allows authenticated reads for Realtime. Hidden tests remain on the server.
 
@@ -176,7 +178,7 @@ Each player receives a random selection and order from the question pool. `--rou
 
 - `backend/app/seed/pdf_import.py` contains the PDF parser and problem metadata.
 - `backend/app/seed/problems.py` contains the function-style demo set.
-- `event_config` stores round length, scoring, distraction timing, and organiser settings.
+- `event_config` stores scoring, distraction timing, and organiser settings. Its legacy `round_seconds` column is retained for existing databases and is not used to limit questions.
 
 ### Judge0 configuration
 
@@ -193,6 +195,7 @@ The backend defaults to `https://ce.judge0.com`. For a hosted or self-hosted ins
 | `/dashboard` | Event entry and player progress | Signed in |
 | `/lobby` | Player roster and countdown | Signed in |
 | `/arena` | Problem, editor, judging, and distractions | Signed in |
+| `/questions` | Assigned questions with Status and Difficulty filters | Signed in |
 | `/complete` | Player results | Signed in |
 | `/admin` | Account approvals, event controls, alerts, and top players | Admin |
 
@@ -210,6 +213,7 @@ From `backend/`, with the Python environment activated:
 | Command | Purpose |
 | --- | --- |
 | `python -m pytest` | Offline protocol, harness, evaluator, and JWT tests |
+| `RUN_SELECTION_DB_TESTS=1 python -m pytest tests/test_question_selection_postgres.py` | Opt-in question selection and scoring checks using session-local temporary database tables (PowerShell: set `$env:RUN_SELECTION_DB_TESTS='1'` first) |
 | `python -m tests.live_judge_check` | Demo solutions across languages on Judge0 |
 | `python -m tests.live_io_check "<questions>.pdf"` | PDF solutions on Judge0; add `--seeded` to use stored tests |
 | `python -m tests.e2e_io "<questions>.pdf"` | Full API flow with the event's problem set |

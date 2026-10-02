@@ -33,8 +33,8 @@ class EventInfo(CamelModel):
     event_date: str
     event_time: str
     total_rounds: int
-    round_seconds: int
-    round_minutes: float
+    round_seconds: None = None  # legacy fields: coding rounds have no time limit
+    round_minutes: None = None
     dsa_points: int
     bonus_points: int
     distraction_seconds: int
@@ -128,7 +128,7 @@ class DistractionStatus(CamelModel):
 class RoundInfo(CamelModel):
     round: int
     status: Literal["active", "solved", "expired"]
-    seconds_left: int
+    elapsed_seconds: int
     distraction: DistractionStatus
 
 
@@ -146,9 +146,31 @@ class ArenaState(CamelModel):
     server_time: int
 
 
+class QuestionItem(CamelModel):
+    round: int
+    title: str
+    difficulty: Literal["EASY", "MEDIUM", "HARD"]
+    points: int
+    status: Literal["solved", "unsolved"]
+    description: str
+    in_progress: bool
+
+
+class QuestionsResponse(CamelModel):
+    items: list[QuestionItem]
+    participant: ParticipantSummary
+    event_status: Literal["lobby", "live", "ended"]
+    finished: bool
+
+
+class SelectQuestionRequest(CamelModel):
+    round: int = Field(ge=1)
+
+
 class CodeRequest(CamelModel):
     language: str = Field(min_length=1, max_length=16)
     code: str = Field(max_length=200_000)
+    round: int | None = Field(default=None, ge=1)
 
 
 class CompileOut(CamelModel):
@@ -167,6 +189,7 @@ class CaseOut(CamelModel):
 
 
 class RunResponse(CamelModel):
+    round: int
     result: Literal["passed", "failed", "compile-error"]
     passed: int
     total: int
@@ -177,6 +200,7 @@ class RunResponse(CamelModel):
 
 
 class SubmitResponse(CamelModel):
+    round: int
     result: Literal["accepted", "wrong", "compile-error", "expired"]
     headline: str
     passed: int
@@ -188,10 +212,15 @@ class SubmitResponse(CamelModel):
 
 
 class DistractionResolveRequest(CamelModel):
+    round: int | None = Field(default=None, ge=1)
     result: Literal["passed", "failed", "timeout"]
     time_taken: int = Field(ge=0, le=3600)
     distraction_id: str | None = Field(default=None, max_length=40)
     metrics: dict[str, Any] | None = None
+
+
+class DistractionStartRequest(CamelModel):
+    round: int | None = Field(default=None, ge=1)
 
 
 class DistractionResolveResponse(CamelModel):

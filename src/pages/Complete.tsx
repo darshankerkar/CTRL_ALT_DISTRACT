@@ -11,6 +11,7 @@ export default function Complete() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const endedEarly = params.get("ended") === "1";
+  const exitedEarly = params.get("exited") === "1";
   const [result, setResult] = useState<Results | null>(null);
   const [scoreDisplay, setScoreDisplay] = useState(0);
   const [stage, setStage] = useState(0);
@@ -54,6 +55,7 @@ export default function Complete() {
 
   if (!result) return null;
   const RESULT = result;
+  const completedAllRounds = RESULT.rounds.length > 0 && RESULT.rounds.every(Boolean);
 
   return (
     <div className="crt-grid min-h-screen bg-bg-canvas">
@@ -62,7 +64,7 @@ export default function Complete() {
       <MinimalHeader />
       <main className="mx-auto flex max-w-[800px] flex-col items-center px-4 py-16 text-center sm:py-24">
         <p className="font-mono text-sm text-text-muted">
-          {endedEarly ? "> event ended by admin" : "> run complete"}
+          {exitedEarly ? "> challenge exited" : endedEarly ? "> event ended by admin" : "> participation finished"}
           <span className="animate-blink">_</span>
         </p>
 
@@ -70,13 +72,19 @@ export default function Complete() {
           className="mt-6 font-display text-4xl text-text-primary transition-opacity duration-300 sm:text-6xl"
           style={{ opacity: stage >= 1 ? 1 : 0 }}
         >
-          {endedEarly ? "RUN ENDED" : "TASK COMPLETED"}
+          {exitedEarly ? "CHALLENGE EXITED" : endedEarly ? "RUN ENDED" : completedAllRounds ? "TASK COMPLETED" : "PARTICIPATION FINISHED"}
         </h1>
         <p
           className="mt-3 font-sans text-xl text-text-secondary transition-opacity duration-300"
           style={{ opacity: stage >= 1 ? 1 : 0 }}
         >
-          {endedEarly ? "The admin ended the event. Your progress is saved." : RESULT.fullName}
+          {exitedEarly
+            ? "Your participation has ended. All earned points are saved on the leaderboard."
+            : endedEarly
+              ? "The admin ended the event. Your progress is saved."
+              : completedAllRounds
+                ? RESULT.fullName
+                : "Your participation has finished. All earned points are saved on the leaderboard."}
         </p>
 
         <div className="mt-10">
@@ -116,7 +124,7 @@ export default function Complete() {
             {RESULT.rounds.map((solved, i) => (
               <span
                 key={i}
-                title={solved ? `Round ${i + 1} — solved` : `Round ${i + 1} — time expired`}
+                title={solved ? `Round ${i + 1} — solved` : `Round ${i + 1} — not solved`}
                 className={`flex h-6 w-6 items-center justify-center font-mono text-[10px] font-bold ${
                   solved ? "bg-success/20 text-success" : "bg-danger/20 text-danger"
                 }`}

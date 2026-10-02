@@ -73,8 +73,8 @@ async def event_info(conn: asyncpg.Connection | None = None) -> EventInfo:
         event_date=date_label,
         event_time=time_label,
         total_rounds=ev["total_rounds"],
-        round_seconds=ev["round_seconds"],
-        round_minutes=ev["round_seconds"] / 60,
+        round_seconds=None,
+        round_minutes=None,
         dsa_points=ev["dsa_points"],
         bonus_points=ev["bonus_points"],
         distraction_seconds=ev["distraction_seconds"],
@@ -128,18 +128,20 @@ async def finalize_all(conn: asyncpg.Connection) -> None:
     """Close every still-open round and mark every participant finished (used when the event ends)."""
     closed = await conn.fetch(
         """
-        WITH cfg AS (SELECT round_seconds * 1000 AS round_ms FROM public.event_config),
-        closing AS (
+        WITH closing AS (
             UPDATE public.round_attempts ra
             SET status = 'expired', resolved_at = now(),
-                pause_started_at = NULL,
-                paused_ms = paused_ms + COALESCE((EXTRACT(EPOCH FROM (now() - pause_started_at)) * 1000)::int, 0),
-                time_ms = LEAST(cfg.round_ms, GREATEST(0, (
+                pause_started_at = NULL, suspended_at = NULL, submit_lock_until = NULL,
+                distraction_state = CASE WHEN distraction_state IN ('pending', 'active') THEN 'missed' ELSE distraction_state END,
+                paused_ms = paused_ms
+                    + COALESCE((EXTRACT(EPOCH FROM (now() - pause_started_at)) * 1000)::int, 0)
+                    + COALESCE((EXTRACT(EPOCH FROM (now() - suspended_at)) * 1000)::int, 0),
+                time_ms = GREATEST(0, (
                     EXTRACT(EPOCH FROM (now() - ra.started_at)) * 1000
                     - ra.paused_ms
                     - COALESCE(EXTRACT(EPOCH FROM (now() - ra.pause_started_at)) * 1000, 0)
-                )::int))
-            FROM cfg
+                    - COALESCE(EXTRACT(EPOCH FROM (now() - ra.suspended_at)) * 1000, 0)
+                )::int)
             WHERE ra.status = 'active'
             RETURNING ra.user_id, ra.time_ms
         )

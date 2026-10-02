@@ -1,16 +1,14 @@
-import { Lock } from "lucide-react";
+import { List, Lock, LogOut } from "lucide-react";
 import { Logo } from "../../components/Logo";
+import { Button } from "../../components/ui/Button";
 import { useEvent } from "../../context/EventContext";
 import { useAuth } from "../../context/AuthContext";
-import { formatMMSS, padScore, cn, difficultyClasses } from "../../lib/utils";
+import { padScore, cn, difficultyClasses } from "../../lib/utils";
 
-export type TimerState = "normal" | "warning" | "critical" | "paused";
 export type InterruptState = "standby" | "active" | "cleared" | "missed";
 
 export function ArenaHUD({
   round,
-  secondsLeft,
-  timerState,
   score,
   interruptState,
   clearedCount,
@@ -18,10 +16,13 @@ export function ArenaHUD({
   expiredRounds,
   connection = "connected",
   problem,
+  onExit,
+  exitDisabled,
+  exiting,
+  onQuestions,
+  questionsDisabled,
 }: {
   round: number;
-  secondsLeft: number;
-  timerState: TimerState;
   score: number;
   interruptState: InterruptState;
   clearedCount: number;
@@ -29,40 +30,16 @@ export function ArenaHUD({
   expiredRounds: number[];
   connection?: "connected" | "reconnecting" | "offline";
   problem?: { title: string; difficulty: string } | null;
+  onExit: () => void;
+  exitDisabled: boolean;
+  exiting: boolean;
+  onQuestions: () => void;
+  questionsDisabled: boolean;
 }) {
   const EVENT = useEvent();
   const { initials } = useAuth();
-  const timerLabel =
-    timerState === "paused"
-      ? "PAUSED"
-      : timerState === "critical"
-        ? secondsLeft <= 10
-          ? "FINAL SECONDS"
-          : "FINAL MINUTE"
-        : timerState === "warning"
-          ? "HURRY"
-          : "TIME";
-
-  const timerColor =
-    timerState === "critical"
-      ? "text-danger"
-      : timerState === "warning"
-        ? "text-warning"
-        : timerState === "paused"
-          ? "text-text-muted"
-          : "text-text-primary";
-
-  const frameColor =
-    timerState === "critical"
-      ? "border-danger"
-      : timerState === "warning"
-        ? "border-warning"
-        : timerState === "paused"
-          ? "border-border-strong border-dashed"
-          : "border-border-strong";
-
   return (
-    <header className="relative z-sticky grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b border-border-default bg-bg-canvas px-3 sm:h-[80px] sm:gap-4 sm:px-6 xl:px-8">
+    <header className="relative z-sticky grid h-16 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border-default bg-bg-canvas px-3 sm:h-[80px] sm:gap-4 sm:px-6 xl:px-8">
       <div className="flex min-w-0 items-center gap-4 xl:gap-6">
         {/* Brand */}
         <div className="hidden shrink-0 items-center xl:flex">
@@ -113,19 +90,34 @@ export function ArenaHUD({
         </div>
       </div>
 
-      {/* Timer (centered) */}
-      <div className="flex items-center justify-center">
-        <div className={cn("flex min-w-[104px] flex-col items-center justify-center gap-1 rounded-sm border bg-bg-panel px-3 py-1.5 sm:min-w-[144px] sm:px-5 sm:py-2", frameColor)}>
-          <span className={cn("whitespace-nowrap font-body text-[9px] font-medium uppercase leading-none tracking-[0.12em] sm:text-[10px]", timerColor)}>
-            {timerLabel}
-          </span>
-          <div className="font-mono text-2xl font-extrabold leading-none font-tnum sm:text-[28px]">
-            <span className={timerColor}>{formatMMSS(secondsLeft)}</span>
-          </div>
-        </div>
-      </div>
-
       <div className="flex min-w-0 items-center justify-end gap-3 sm:gap-5 xl:gap-6">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={<List size={14} aria-hidden="true" />}
+          onClick={onQuestions}
+          disabled={questionsDisabled}
+          aria-label="All questions"
+          className="shrink-0 !px-2 sm:!px-3"
+        >
+          <span className="sm:hidden">Questions</span>
+          <span className="hidden sm:inline">All questions</span>
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
+          icon={<LogOut size={14} aria-hidden="true" />}
+          onClick={onExit}
+          disabled={exitDisabled}
+          loading={exiting}
+          loadingLabel="Exiting…"
+          aria-label="Exit challenge"
+          className="shrink-0 !px-2 sm:!px-3"
+        >
+          <span className="sm:hidden">Exit</span>
+          <span className="hidden sm:inline">Exit challenge</span>
+        </Button>
+
         {/* Score */}
         <div className="flex shrink-0 flex-col justify-center gap-1.5">
           <span className="font-body text-[10px] font-medium uppercase leading-none tracking-[0.12em] text-text-muted">

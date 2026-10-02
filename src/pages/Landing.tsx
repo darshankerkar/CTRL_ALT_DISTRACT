@@ -7,7 +7,6 @@ import { useEvent } from "../context/EventContext";
 import { LeaderboardTable } from "../components/leaderboard/LeaderboardTable";
 import { api } from "../lib/api";
 import type { EventInfo, LeaderboardEntry } from "../lib/types";
-import { formatMMSS } from "../lib/utils";
 
 const steps = (EVENT: EventInfo) => [
   {
@@ -18,7 +17,7 @@ const steps = (EVENT: EventInfo) => [
   {
     n: "02",
     title: `Solve ${EVENT.totalRounds} rounds`,
-    body: `One DSA problem per round. ${Math.round(EVENT.roundMinutes)} minutes on the clock. ${EVENT.languages.map((l) => l.label).join(", ")}.`,
+    body: `One DSA problem per round, with no time limit per question. ${EVENT.languages.map((l) => l.label).join(", ")}.`,
   },
   {
     n: "03",
@@ -69,7 +68,7 @@ export default function Landing() {
             </h1>
 
             <p className="mt-6 font-sans text-xl font-semibold text-text-primary">
-              {EVENT.totalRounds} problems. {formatMMSS(EVENT.roundSeconds)} each. {EVENT.distractionSeconds}-second interruptions.
+              {EVENT.totalRounds} problems. No time limit per question. {EVENT.distractionSeconds}-second interruptions.
             </p>
 
             <p className="mt-4 max-w-[48ch] font-body text-lg leading-relaxed text-text-secondary">
@@ -90,7 +89,7 @@ export default function Landing() {
             <div className="mt-10 flex divide-x divide-border-default border border-border-default">
               {[
                 ["Rounds", "10"],
-                ["Time/round", "10:00"],
+                ["Time/round", "No limit"],
                 ["Interrupt", "00:30"],
               ].map(([label, val]) => (
                 <div key={label} className="flex-1 px-4 py-3">

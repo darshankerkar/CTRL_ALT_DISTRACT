@@ -5,6 +5,7 @@ import { DistractionIntro } from "../../components/distractions/DistractionIntro
 import { DistractionTimer } from "../../components/distractions/DistractionTimer";
 import { DistractionResultView } from "../../components/distractions/DistractionResult";
 import { GameFactory } from "../../components/games/GameFactory";
+import { Button } from "../../components/ui/Button";
 import type {
   DistractionResult as DistractionResultType,
   DistractionSuccessPayload,
@@ -17,9 +18,13 @@ type ModalPhase = "intro" | "playing" | "result";
 export function DistractionModal({
   index,
   onResolved,
+  onExit,
+  exitDisabled,
 }: {
   index: number;
   onResolved: (cleared: boolean, result: DistractionResultType | null) => void;
+  onExit: () => void;
+  exitDisabled: boolean;
 }) {
   const EVENT = useEvent();
   const meta = DISTRACTIONS[(index - 1) % DISTRACTIONS.length] || DISTRACTIONS[0];
@@ -117,14 +122,14 @@ export function DistractionModal({
         className="crt-scanlines relative z-20 w-full max-w-2xl overflow-hidden border-2 border-accent-magenta bg-bg-panel chamfer-lg shadow-[0_0_35px_rgba(255,62,165,0.4)] flex flex-col"
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-accent-magenta/50 bg-fill-bonus px-5 py-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-accent-magenta/50 bg-fill-bonus px-5 py-3.5">
           <div className="flex items-center gap-2">
             <span id="distraction-title" className="font-label text-sm sm:text-base uppercase tracking-wide text-accent-magenta">
               ⚡ Distraction #{String(meta.index).padStart(2, "0")} — {meta.title}
             </span>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex max-w-full flex-wrap items-center justify-end gap-3 sm:gap-4">
             {phase === "playing" && (
               <DistractionTimer
                 totalSeconds={timeLimit}
@@ -135,6 +140,9 @@ export function DistractionModal({
             <span className="flex items-center gap-1 font-mono text-sm sm:text-base font-bold text-accent-magenta">
               +{EVENT.bonusPoints} BONUS 🪙
             </span>
+            <Button variant="danger" size="sm" onClick={onExit} disabled={exitDisabled}>
+              Exit challenge
+            </Button>
           </div>
         </div>
 

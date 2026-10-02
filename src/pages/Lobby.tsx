@@ -192,7 +192,7 @@ export default function Lobby() {
               </span>
               <div className="flex flex-col divide-y divide-border-hairline">
                 {[
-                  ["Rounds", `${EVENT.totalRounds} · ${formatMMSS(EVENT.roundSeconds)} each`],
+                  ["Rounds", `${EVENT.totalRounds} · No time limit per question`],
                   ["Distractions", formatMMSS(EVENT.distractionSeconds)],
                   ["Clear", `+${EVENT.bonusPoints}`],
                   ["Timeout", "No bonus"],

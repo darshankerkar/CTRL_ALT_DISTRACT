@@ -25,6 +25,7 @@ function writeStore(key: string, value: string) {
 
 export function CodeEditor({
   locked,
+  lockedMessage = "Locked while submitting",
   readOnly,
   errorLine,
   focusLine,
@@ -33,6 +34,7 @@ export function CodeEditor({
   onChange,
 }: {
   locked?: boolean;
+  lockedMessage?: string;
   readOnly?: boolean;
   errorLine?: number | null;
   focusLine?: { line: number; nonce: number } | null;
@@ -59,17 +61,16 @@ export function CodeEditor({
   // Load the saved draft for this language, or the problem's starter template.
   useEffect(() => {
     if (!problem) return;
-    setCode(readStore(`${draftKey}:${lang}`) ?? problem.starterCode[lang]);
-  }, [problem, lang, draftKey]);
-
-  useEffect(() => {
-    if (problem) onChange?.(code, lang);
+    const next = readStore(`${draftKey}:${lang}`) ?? problem.starterCode[lang];
+    setCode(next);
+    onChange?.(next, lang);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, lang, problem]);
+  }, [problem, lang, draftKey]);
 
   const updateCode = (next: string) => {
     setCode(next);
     writeStore(`${draftKey}:${lang}`, next);
+    onChange?.(next, lang);
   };
 
   useEffect(() => {
@@ -136,8 +137,9 @@ export function CodeEditor({
         <button
           title="Reset to template"
           aria-label="Reset to template"
+          disabled={locked}
           onClick={() => problem && updateCode(problem.starterCode[lang])}
-          className="flex h-8 w-8 items-center justify-center rounded-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+          className="flex h-8 w-8 items-center justify-center rounded-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           <RotateCcw size={16} />
         </button>
@@ -211,7 +213,7 @@ export function CodeEditor({
         </div>
         {locked && (
           <div className="absolute inset-0 flex items-end justify-center border border-dashed border-border-strong pb-2">
-            <span className="font-body text-xs text-text-muted">Locked while submitting</span>
+            <span className="font-body text-xs text-text-muted">{lockedMessage}</span>
           </div>
         )}
       </div>

@@ -18,7 +18,6 @@ type Phase = "typing" | "distraction" | "cleared";
 export function CrtMonitor({ className = "" }: { className?: string }) {
   const [phase, setPhase] = useState<Phase>("typing");
   const [charCount, setCharCount] = useState(0);
-  const [timer, setTimer] = useState(582); // seconds, counts down then loops
   const [score, setScore] = useState(420);
   const [ring, setRing] = useState(30);
   const [reduced] = useState(
@@ -61,25 +60,12 @@ export function CrtMonitor({ className = "" }: { className?: string }) {
   }, [reduced, fullText.length]);
 
   useEffect(() => {
-    if (reduced) return;
-    const id = setInterval(() => {
-      setTimer((t) => (t <= 0 ? 599 : t - 1));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [reduced]);
-
-  useEffect(() => {
     if (phase === "cleared") {
       const id = setTimeout(() => setScore((s) => s + 50), 300);
       return () => clearTimeout(id);
     }
     if (phase === "typing") setScore(420);
   }, [phase]);
-
-  const mm = Math.floor(timer / 60)
-    .toString()
-    .padStart(2, "0");
-  const ss = (timer % 60).toString().padStart(2, "0");
 
   return (
     <div className={className}>
@@ -100,9 +86,6 @@ export function CrtMonitor({ className = "" }: { className?: string }) {
             <div className="mb-3 flex items-center justify-between border-b border-border-hairline pb-2">
               <span className="font-label text-[10px] tracking-wider text-text-muted">
                 ROUND 04/10
-              </span>
-              <span className="font-tnum text-lg font-bold text-text-primary">
-                {mm}:{ss}
               </span>
               <span className="font-tnum text-lg font-bold text-accent-yellow">
                 {padScore(score)}

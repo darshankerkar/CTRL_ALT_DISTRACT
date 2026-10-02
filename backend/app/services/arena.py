@@ -2,13 +2,14 @@
 
 Timing model (all instants are Postgres `now()`, so worker clocks never matter):
 
-    time left = round_seconds - (now - started_at - paused_ms - time inside an open distraction)
+    elapsed time = now - started_at - paused_ms - open distraction/suspension time
 
-A distraction freezes the clock (`pause_started_at`). The client reports `secondsLeft` back from the
-server on every sync, so a refreshed or second tab always agrees with the authoritative value.
+Coding rounds have no deadline. Active elapsed time is recorded for leaderboard ties and used to
+schedule distractions. A distraction pauses that elapsed time (`pause_started_at`), and the client
+receives `elapsedSeconds` on every sync so refreshes and second tabs agree with the server.
 
-Every mutating call runs in one transaction that first locks the player's `participations` row, so
-double-clicks and parallel tabs cannot double-score a round or double-award a bonus.
+Arena transitions share-lock the event row before locking the player's `participations` row,
+so admin completion, double-clicks and parallel tabs cannot deadlock or double-award points.
 """
 
 from __future__ import annotations
@@ -32,23 +33,21 @@ from ..schemas import (
     DistractionResolveResponse,
     DistractionStatus,
     ProblemPublic,
+    QuestionItem,
+    QuestionsResponse,
     ResultsResponse,
     RoundInfo,
     RoundResult,
     RunResponse,
     SubmitResponse,
 )
-from . import catalog, proctor
+from . import catalog, people, proctor
 from . import event as event_service
 from .common import display_name, format_hms, summary
 from .limits import gate
 
 # Size of the frontend's distraction registry (src/utils/distractionRegistry.ts).
 DISTRACTION_COUNT = 10
-# A round is only closed once it is this far past zero, absorbing network latency on the last click.
-EXPIRY_GRACE_MS = 2500
-# How long an in-flight submission shields its round from expiring.
-SUBMIT_LOCK_S = 60
 # Two sessions on one account within this window are reported as MULTI_SESSION.
 SESSION_WINDOW_S = 20
 
@@ -68,16 +67,16 @@ def _ms_between(later, earlier) -> float:
 
 
 def elapsed_ms(attempt: asyncpg.Record, now) -> int:
-    """Active (un-paused) milliseconds the player has spent on the round."""
+    """Active milliseconds on this question, excluding games and other questions."""
+    if attempt["resolved_at"] and attempt.get("time_ms") is not None:
+        return max(0, int(attempt["time_ms"]))
     end = attempt["resolved_at"] or now
     used = _ms_between(end, attempt["started_at"]) - attempt["paused_ms"]
     if attempt["pause_started_at"] and not attempt["resolved_at"]:
         used -= _ms_between(now, attempt["pause_started_at"])
+    if attempt.get("suspended_at") and not attempt["resolved_at"]:
+        used -= _ms_between(now, attempt["suspended_at"])
     return max(0, int(used))
-
-
-def remaining_ms(attempt: asyncpg.Record, round_ms: int, now) -> int:
-    return round_ms - elapsed_ms(attempt, now)
 
 
 async def _lock_participation(conn: asyncpg.Connection, user_id: str) -> asyncpg.Record:
@@ -115,11 +114,17 @@ async def _resolve_round(
     points: int,
 ) -> asyncpg.Record | None:
     """Close an active round exactly once and roll the result into the participant's totals."""
+    part = await _participation(conn, user_id)
+    finished = status == "solved" and part["solved_count"] + 1 >= ev["total_rounds"]
     row = await conn.fetchrow(
         """
         UPDATE public.round_attempts
         SET status = $3::round_status, resolved_at = now(), time_ms = $4, points = $5,
-            pause_started_at = NULL, submit_lock_until = NULL
+            paused_ms = paused_ms
+                + COALESCE(GREATEST(0, (EXTRACT(EPOCH FROM (now() - pause_started_at)) * 1000)::int), 0)
+                + COALESCE(GREATEST(0, (EXTRACT(EPOCH FROM (now() - suspended_at)) * 1000)::int), 0),
+            distraction_state = CASE WHEN distraction_state IN ('pending', 'active') THEN 'missed' ELSE distraction_state END,
+            pause_started_at = NULL, suspended_at = NULL, submit_lock_until = NULL
         WHERE user_id = $1::uuid AND round_no = $2 AND status = 'active'
         RETURNING *
         """,
@@ -127,7 +132,6 @@ async def _resolve_round(
     )
     if row is None:
         return None
-    last_round = round_no >= ev["total_rounds"]
     await conn.execute(
         """
         UPDATE public.participations
@@ -138,21 +142,64 @@ async def _resolve_round(
             finished_at = CASE WHEN $5 THEN now() ELSE finished_at END
         WHERE user_id = $1::uuid
         """,
-        user_id, points, 1 if status == "solved" else 0, time_ms, last_round,
+        user_id, points, 1 if status == "solved" else 0, time_ms, finished,
     )
     return row
+
+
+async def _activate_question(
+    conn: asyncpg.Connection, ev: asyncpg.Record, part: asyncpg.Record, round_no: int
+) -> tuple[asyncpg.Record, asyncpg.Record]:
+    """Select one assigned question without discarding its attempt or random schedule."""
+    user_id = str(part["user_id"])
+    attempt = await _attempt(conn, user_id, round_no)
+    if attempt is not None and attempt["status"] != "active":
+        raise conflict("already_solved", "That question is already complete.")
+    if attempt is None:
+        problem = await catalog.get_problem(part["problem_order"][round_no - 1])
+        order = part["distraction_order"]
+        lo = ev["distraction_min_at"]
+        hi = max(lo, ev["distraction_max_at"])
+        attempt = await conn.fetchrow(
+            """
+            INSERT INTO public.round_attempts
+                (user_id, round_no, problem_id, distraction_index, distraction_at)
+            VALUES ($1::uuid, $2, $3, $4, $5) RETURNING *
+            """,
+            user_id, round_no, problem.id, order[(round_no - 1) % len(order)], random.randint(lo, hi),
+        )
+    elif attempt.get("suspended_at") is not None:
+        attempt = await conn.fetchrow(
+            """
+            UPDATE public.round_attempts
+            SET paused_ms = paused_ms + GREATEST(0, (EXTRACT(EPOCH FROM (now() - suspended_at)) * 1000)::int),
+                suspended_at = NULL
+            WHERE user_id = $1::uuid AND round_no = $2 AND status = 'active' RETURNING *
+            """,
+            user_id, round_no,
+        )
+    await conn.execute(
+        "UPDATE public.participations SET current_round = $2, status = 'playing', "
+        "started_at = COALESCE(started_at, now()) WHERE user_id = $1::uuid",
+        user_id, round_no,
+    )
+    return await _participation(conn, user_id), attempt
+
+
+def _validate_question(ev: asyncpg.Record, part: asyncpg.Record, round_no: int) -> None:
+    if round_no < 1 or round_no > ev["total_rounds"] or round_no > len(part["problem_order"]):
+        raise ApiError(403, "locked_round", "That question is not assigned to you.")
 
 
 async def _settle(
     conn: asyncpg.Connection, ev: asyncpg.Record, part: asyncpg.Record, now
 ) -> tuple[asyncpg.Record, asyncpg.Record | None]:
-    """Apply time-driven transitions: an abandoned distraction times out, an overrun round expires."""
+    """Time out abandoned distractions while leaving coding rounds open."""
     user_id = str(part["user_id"])
     attempt = await _attempt(conn, user_id, part["current_round"])
     if attempt is None or attempt["status"] != "active":
         return part, attempt
 
-    round_ms = ev["round_seconds"] * 1000
     cap_ms = (ev["distraction_seconds"] + ev["distraction_grace_seconds"]) * 1000
 
     if attempt["pause_started_at"] and _ms_between(now, attempt["pause_started_at"]) > cap_ms:
@@ -170,11 +217,6 @@ async def _settle(
             user_id, attempt["round_no"], attempt["distraction_index"], ev["distraction_seconds"],
         )
 
-    shielded = attempt["submit_lock_until"] is not None and attempt["submit_lock_until"] > now
-    if not shielded and attempt["pause_started_at"] is None and remaining_ms(attempt, round_ms, now) <= -EXPIRY_GRACE_MS:
-        await _resolve_round(conn, ev, user_id, attempt["round_no"], status="expired", time_ms=round_ms, points=0)
-        part = await _participation(conn, user_id)
-        attempt = await _attempt(conn, user_id, attempt["round_no"])
     return part, attempt
 
 
@@ -209,8 +251,6 @@ async def _build_state(
     )
     info: RoundInfo | None = None
     if attempt is not None:
-        round_ms = ev["round_seconds"] * 1000
-        left = max(0, remaining_ms(attempt, round_ms, now)) if attempt["status"] == "active" else 0
         remaining = None
         if attempt["pause_started_at"]:
             cap = ev["distraction_seconds"] * 1000
@@ -218,7 +258,7 @@ async def _build_state(
         info = RoundInfo(
             round=attempt["round_no"],
             status=attempt["status"],
-            seconds_left=(left + 999) // 1000,
+            elapsed_seconds=elapsed_ms(attempt, now) // 1000,
             distraction=DistractionStatus(
                 state=attempt["distraction_state"],
                 at_seconds=attempt["distraction_at"],
@@ -267,9 +307,56 @@ async def leave(user_id: str) -> None:
         await conn.execute("DELETE FROM public.participations WHERE user_id = $1::uuid", user_id)
 
 
+async def exit_challenge(user_id: str) -> ArenaState:
+    """Finish this player's run, retaining earned points, submissions and leaderboard eligibility."""
+    async with db.transaction() as conn:
+        # Event lifecycle operations lock this row first. Match that order so an admin ending
+        # the event and a participant exiting cannot deadlock while closing the same round.
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
+        part = await _lock_participation(conn, user_id)
+        now = part["db_now"]
+        if part["current_round"] <= 0:
+            raise conflict("not_started", "You have not started the challenge yet.")
+        part, attempt = await _settle(conn, ev, part, now)
+
+        if part["status"] != "finished":
+            open_attempts = await conn.fetch(
+                "SELECT * FROM public.round_attempts WHERE user_id = $1::uuid AND status = 'active' ORDER BY round_no",
+                user_id,
+            )
+            for open_attempt in open_attempts:
+                used_ms = elapsed_ms(open_attempt, now)
+                paused_ms = int(_ms_between(now, open_attempt["pause_started_at"])) if open_attempt["pause_started_at"] else 0
+                # Close and clear suspension together in _resolve_round. Clearing a suspended
+                # active row first would violate the one-selected-question unique index.
+                if open_attempt["distraction_state"] == "active":
+                    await conn.execute(
+                        "INSERT INTO public.distraction_events "
+                        "(user_id, round_no, distraction_index, result, time_taken, metrics) "
+                        "VALUES ($1::uuid, $2, $3, 'timeout', $4, $5)",
+                        user_id, open_attempt["round_no"], open_attempt["distraction_index"],
+                        min(ev["distraction_seconds"], max(0, paused_ms // 1000)), {"reason": "participant_exit"},
+                    )
+                await _resolve_round(
+                    conn, ev, user_id, open_attempt["round_no"], status="expired", time_ms=used_ms, points=0,
+                )
+
+            await conn.execute(
+                "UPDATE public.participations SET status = 'finished', "
+                "finished_at = COALESCE(finished_at, now()) WHERE user_id = $1::uuid",
+                user_id,
+            )
+            part = await _participation(conn, user_id)
+            attempt = await _attempt(conn, user_id, part["current_round"])
+        state = await _build_state(conn, ev, part, attempt, now)
+
+    people.invalidate_leaderboard()
+    return state
+
+
 async def get_state(user_id: str, client: str | None = None) -> ArenaState:
     async with db.transaction() as conn:
-        ev = await event_service.get_event(conn)
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
         part = await _lock_participation(conn, user_id)
         now = part["db_now"]
         await _touch_session(conn, ev, part, client, now)
@@ -278,9 +365,9 @@ async def get_state(user_id: str, client: str | None = None) -> ArenaState:
 
 
 async def start_or_advance(user_id: str, client: str | None = None) -> ArenaState:
-    """Begin round 1, or move on once the current round is resolved. Idempotent while a round is active."""
+    """Resume the selected question, or begin the first remaining unsolved question."""
     async with db.transaction() as conn:
-        ev = await event_service.get_event(conn)
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
         if ev["status"] != "live":
             raise conflict("event_not_live", "The event has not started yet." if ev["status"] == "lobby" else "The event has ended.")
         part = await _lock_participation(conn, user_id)
@@ -288,56 +375,100 @@ async def start_or_advance(user_id: str, client: str | None = None) -> ArenaStat
         await _touch_session(conn, ev, part, client, now)
         part, attempt = await _settle(conn, ev, part, now)
 
-        if part["status"] != "finished" and (attempt is None or attempt["status"] != "active"):
-            next_round = part["current_round"] + 1
-            if next_round <= ev["total_rounds"]:
-                dealt = part["problem_order"]
-                if len(dealt) < next_round:
-                    raise ApiError(500, "problem_missing", "No question was assigned for this round.")
-                problem = await catalog.get_problem(dealt[next_round - 1])
-                lo = ev["distraction_min_at"]
-                hi = max(lo, min(ev["distraction_max_at"], ev["round_seconds"] - ev["distraction_seconds"] - 15))
-                order = part["distraction_order"]
-                attempt = await conn.fetchrow(
-                    """
-                    INSERT INTO public.round_attempts
-                        (user_id, round_no, problem_id, distraction_index, distraction_at)
-                    VALUES ($1::uuid, $2, $3, $4, $5) RETURNING *
-                    """,
-                    user_id, next_round, problem.id, order[(next_round - 1) % len(order)], random.randint(lo, hi),
+        if part["status"] != "finished" and (attempt is None or attempt["status"] != "active" or attempt.get("suspended_at")):
+            completed = {
+                row["round_no"] for row in await conn.fetch(
+                    "SELECT round_no FROM public.round_attempts WHERE user_id = $1::uuid AND status <> 'active'", user_id,
                 )
-                await conn.execute(
-                    "UPDATE public.participations SET current_round = $2, status = 'playing', "
-                    "started_at = COALESCE(started_at, now()) WHERE user_id = $1::uuid",
-                    user_id, next_round,
-                )
-                part = await _participation(conn, user_id)
+            }
+            next_round = next((number for number in range(1, ev["total_rounds"] + 1) if number not in completed), None)
+            if next_round is not None:
+                _validate_question(ev, part, next_round)
+                part, attempt = await _activate_question(conn, ev, part, next_round)
         return await _build_state(conn, ev, part, attempt, now)
 
 
-async def expire(user_id: str) -> ArenaState:
-    """Client reached 0:00. The server confirms against its own clock (settle applies the grace)."""
-    return await get_state(user_id)
+async def questions(user_id: str) -> QuestionsResponse:
+    """Public summaries for this player's stable question assignment; never hidden tests."""
+    async with db.acquire() as conn:
+        ev = await event_service.get_event(conn, fresh=True)
+        part = await _participation(conn, user_id)
+        if part is None:
+            raise conflict("not_joined", "Join the event to view your questions.")
+        if ev["status"] == "lobby":
+            raise conflict("event_not_live", "Questions are available when the event starts.")
+        attempts = {row["round_no"]: row for row in await conn.fetch(
+            "SELECT round_no, status::text AS status FROM public.round_attempts WHERE user_id = $1::uuid ORDER BY round_no",
+            user_id,
+        )}
+    items = []
+    for number, problem_id in enumerate(part["problem_order"][:ev["total_rounds"]], start=1):
+        problem = (await catalog.get_problem(problem_id)).public
+        attempt = attempts.get(number)
+        solved = attempt is not None and attempt["status"] == "solved"
+        items.append(QuestionItem(
+            round=number, title=problem.title, difficulty=problem.difficulty, points=ev["dsa_points"],
+            status="solved" if solved else "unsolved",
+            description=next((paragraph for paragraph in problem.description if paragraph.strip()), ""),
+            in_progress=attempt is not None and attempt["status"] == "active",
+        ))
+    return QuestionsResponse(items=items, participant=summary(part), event_status=ev["status"], finished=part["status"] == "finished")
+
+
+async def select_question(user_id: str, round_no: int, client: str | None = None) -> ArenaState:
+    """Switch to any assigned unfinished question, preserving work and elapsed time."""
+    async with db.transaction() as conn:
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
+        if ev["status"] != "live":
+            raise conflict("event_not_live", "The event is not live.")
+        part = await _lock_participation(conn, user_id)
+        now = part["db_now"]
+        if part["status"] == "finished":
+            raise conflict("participant_finished", "Your participation is complete.")
+        _validate_question(ev, part, round_no)
+        await _touch_session(conn, ev, part, client, now)
+        part, current = await _settle(conn, ev, part, now)
+        wanted = await _attempt(conn, user_id, round_no)
+        if wanted is not None and wanted["status"] != "active":
+            raise conflict("already_solved", "That question is already complete.")
+        if current is not None and current["status"] == "active" and current["round_no"] != round_no:
+            if current["distraction_state"] == "active":
+                raise conflict("distraction_active", "Finish the distraction before switching questions.")
+            if current["distraction_state"] == "pending" and elapsed_ms(current, now) >= current["distraction_at"] * 1000:
+                raise conflict("distraction_due", "Complete the scheduled distraction before switching questions.")
+            await conn.execute(
+                "UPDATE public.round_attempts SET suspended_at = now() "
+                "WHERE user_id = $1::uuid AND round_no = $2 AND status = 'active' AND suspended_at IS NULL",
+                user_id, current["round_no"],
+            )
+        part, attempt = await _activate_question(conn, ev, part, round_no)
+        return await _build_state(conn, ev, part, attempt, now)
 
 
 async def current_problem(user_id: str, round_no: int | None) -> ProblemPublic:
     async with db.acquire() as conn:
+        ev = await event_service.get_event(conn, fresh=True)
         part = await _participation(conn, user_id)
-    if part is None or part["current_round"] == 0:
+    if part is None:
+        raise conflict("not_joined", "Join the event to view your questions.")
+    if ev["status"] == "lobby":
+        raise conflict("event_not_live", "Questions are available when the event starts.")
+    if round_no is None and part["current_round"] == 0:
         raise conflict("not_started", "No round is in progress.")
-    wanted = round_no or part["current_round"]
-    if wanted > part["current_round"]:
-        raise ApiError(403, "locked_round", "That round is not unlocked yet.")
+    wanted = part["current_round"] if round_no is None else round_no
+    _validate_question(ev, part, wanted)
     return catalog.public_for_round(await catalog.get_problem(part["problem_order"][wanted - 1]), wanted)
 
 
-async def distraction_start(user_id: str) -> ArenaState:
+async def distraction_start(user_id: str, round_no: int | None = None) -> ArenaState:
     async with db.transaction() as conn:
-        ev = await event_service.get_event(conn)
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
         part = await _lock_participation(conn, user_id)
         now = part["db_now"]
+        if round_no is not None and round_no != part["current_round"]:
+            raise conflict("question_changed", "The selected question changed. Refresh the arena.")
         part, attempt = await _settle(conn, ev, part, now)
-        if ev["status"] != "live" or attempt is None or attempt["status"] != "active":
+        if ev["status"] != "live" or part["status"] == "finished" or attempt is None or attempt["status"] != "active" or attempt.get("suspended_at"):
             raise conflict("round_closed", "There is no active round.")
         if attempt["distraction_state"] == "active":
             return await _build_state(conn, ev, part, attempt, now)  # idempotent
@@ -359,13 +490,16 @@ async def distraction_start(user_id: str) -> ArenaState:
 
 async def distraction_resolve(user_id: str, req: DistractionResolveRequest) -> DistractionResolveResponse:
     async with db.transaction() as conn:
-        ev = await event_service.get_event(conn)
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
         part = await _lock_participation(conn, user_id)
         now = part["db_now"]
+        if req.round is not None and req.round != part["current_round"]:
+            raise conflict("question_changed", "The selected question changed. Refresh the arena.")
         part, attempt = await _settle(conn, ev, part, now)
         if attempt is None:
             raise conflict("round_closed", "There is no active round.")
-        if attempt["distraction_state"] != "active":  # already settled (or timed out server-side)
+        if part["status"] == "finished" or attempt["status"] != "active" or attempt["distraction_state"] != "active":
+            # A late result cannot award a bonus after this player has exited or their round closed.
             cleared = attempt["distraction_state"] == "cleared"
             return DistractionResolveResponse(cleared=cleared, bonus=attempt["bonus"], participant=summary(part))
 
@@ -425,28 +559,22 @@ async def _validate_code(req: CodeRequest) -> None:
         raise ApiError(400, "empty_code", "Write some code first.")
 
 
-async def _open_round(user_id: str, *, lock_for_submit: bool) -> tuple[asyncpg.Record, asyncpg.Record, int]:
+async def _open_round(user_id: str, round_no: int | None = None) -> tuple[asyncpg.Record, asyncpg.Record, int]:
     """Validate that the player has an active, un-paused round. Returns (event, attempt, elapsed_ms)."""
     async with db.transaction() as conn:
-        ev = await event_service.get_event(conn)
+        ev = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
         part = await _lock_participation(conn, user_id)
         now = part["db_now"]
+        if round_no is not None and round_no != part["current_round"]:
+            raise conflict("question_changed", "The selected question changed. Refresh the arena before submitting.")
         part, attempt = await _settle(conn, ev, part, now)
         if ev["status"] != "live":
             raise conflict("event_not_live", "The event is not live.")
-        if attempt is None or attempt["status"] != "active":
+        if part["status"] == "finished" or attempt is None or attempt["status"] != "active" or attempt.get("suspended_at"):
             raise conflict("round_closed", "This round is already over.")
         if attempt["distraction_state"] == "active":
             raise conflict("distraction_active", "Finish the distraction first.")
         used = elapsed_ms(attempt, now)
-        if remaining_ms(attempt, ev["round_seconds"] * 1000, now) <= -EXPIRY_GRACE_MS:
-            raise conflict("round_closed", "Time is up for this round.")
-        if lock_for_submit:
-            await conn.execute(
-                "UPDATE public.round_attempts SET submit_lock_until = now() + make_interval(secs => $3) "
-                "WHERE user_id = $1::uuid AND round_no = $2",
-                user_id, attempt["round_no"], SUBMIT_LOCK_S,
-            )
         return ev, attempt, used
 
 
@@ -496,11 +624,12 @@ async def run(user_id: str, req: CodeRequest) -> RunResponse:
     await _validate_code(req)
     settings = get_settings()
     async with gate.guard(user_id, settings.run_interval_s):
-        _, attempt, _ = await _open_round(user_id, lock_for_submit=False)
+        _, attempt, _ = await _open_round(user_id, req.round)
         problem, tests, evaluation = await _judge(attempt, req, samples_only=True)
     result = "compile-error" if evaluation.compile else "passed" if evaluation.all_passed else "failed"
     await _log_submission(user_id, problem.id, attempt["round_no"], req, "run", result, evaluation)
     return RunResponse(
+        round=attempt["round_no"],
         result=result,
         passed=evaluation.passed,
         total=evaluation.total,
@@ -516,43 +645,33 @@ async def submit(user_id: str, req: CodeRequest) -> SubmitResponse:
     await _validate_code(req)
     settings = get_settings()
     async with gate.guard(user_id, settings.submit_interval_s):
-        ev, attempt, used_ms = await _open_round(user_id, lock_for_submit=True)
+        ev, attempt, used_ms = await _open_round(user_id, req.round)
         round_no = attempt["round_no"]
-        try:
-            problem, _, evaluation = await _judge(attempt, req, samples_only=False)
-        except BaseException:
-            async with db.acquire() as conn:  # release the shield; the round clock keeps running
-                await conn.execute(
-                    "UPDATE public.round_attempts SET submit_lock_until = NULL WHERE user_id = $1::uuid AND round_no = $2",
-                    user_id, round_no,
-                )
-            raise
+        problem, _, evaluation = await _judge(attempt, req, samples_only=False)
 
     verdict = "compile-error" if evaluation.compile else "accepted" if evaluation.all_passed else "wrong"
     async with db.transaction() as conn:
+        live_event = await conn.fetchrow("SELECT * FROM public.event_config FOR SHARE")
         part = await _lock_participation(conn, user_id)
         current = await _attempt(conn, user_id, round_no)
         scored = False
-        if verdict == "accepted" and current is not None and current["status"] == "active":
-            round_ms = ev["round_seconds"] * 1000
+        if verdict == "accepted" and live_event["status"] == "live" and part["status"] != "finished" and current is not None and current["status"] == "active":
             scored = (
                 await _resolve_round(
-                    conn, ev, user_id, round_no, status="solved", time_ms=min(used_ms, round_ms), points=ev["dsa_points"]
+                    conn, ev, user_id, round_no, status="solved", time_ms=used_ms, points=ev["dsa_points"]
                 )
                 is not None
-            )
-        elif current is not None and current["status"] == "active":
-            await conn.execute(
-                "UPDATE public.round_attempts SET submit_lock_until = NULL WHERE user_id = $1::uuid AND round_no = $2",
-                user_id, round_no,
             )
         part = await _participation(conn, user_id)
 
     await _log_submission(user_id, problem.id, round_no, req, "submit", verdict, evaluation)
+    if scored:
+        people.invalidate_leaderboard()
     closed_early = verdict == "accepted" and not scored  # the round ended (e.g. admin stopped the event) mid-judging
     return SubmitResponse(
+        round=round_no,
         result="expired" if closed_early else verdict,
-        headline="TIME'S UP" if closed_early else evaluation.headline(),
+        headline="ROUND CLOSED" if closed_early else evaluation.headline(),
         passed=evaluation.passed,
         total=evaluation.total,
         compile=_compile_out(evaluation),

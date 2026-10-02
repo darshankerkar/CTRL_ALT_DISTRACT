@@ -7,7 +7,7 @@ export function RoundTransition({
   isFinal,
 }: {
   round: number;
-  variant: "clear" | "time-up";
+  variant: "clear" | "closed";
   isFinal: boolean;
 }) {
   const EVENT = useEvent();
@@ -22,7 +22,7 @@ export function RoundTransition({
           variant === "clear" ? "text-success" : "text-danger",
         )}
       >
-        {variant === "clear" ? "CLEAR" : "TIME'S UP"}
+        {variant === "clear" ? "CLEAR" : "ROUND CLOSED"}
       </span>
       {variant === "clear" ? (
         <span className="mt-3 font-mono text-2xl font-bold text-accent-yellow">
@@ -36,7 +36,7 @@ export function RoundTransition({
         <span className="mt-8 font-display text-2xl text-accent-yellow">FINAL ROUND COMPLETE</span>
       ) : (
         <span className="mt-8 flex items-center gap-2 font-label text-base uppercase tracking-[0.04em] text-text-secondary">
-          Loading round {(round + 1).toString().padStart(2, "0")}
+          Choose your next question
           <span className="flex gap-1">
             {[0, 1, 2].map((i) => (
               <span
